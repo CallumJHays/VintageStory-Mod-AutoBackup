@@ -1,0 +1,13 @@
+{
+    "type": "code",
+    "modid": "autobackup",
+    "name": "AutoBackup",
+    "authors": [
+        "Bluedolph"
+    ],
+    "description": "Auto-Backup Saves Periodically",
+    "version": "1.0.0",
+    "dependencies": {
+        "game": ""
+    }
+}
