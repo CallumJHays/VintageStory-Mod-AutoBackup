@@ -6,9 +6,12 @@
     <OutputPath>bin\$(Configuration)\Mods\mod</OutputPath>
   </PropertyGroup>
 
-  <ItemGroup>
-    <Compile Include="..\ZZCakeBuild\Program.cs" Link="Program.cs" />
-  </ItemGroup>
+
+    <ItemGroup>
+	    <ProjectReference Include="..\ZZCakeBuild\CakeBuild.csproj">
+		    <Private>False</Private>
+	    </ProjectReference>
+    </ItemGroup>
 
   <ItemGroup>
     <Reference Include="VintagestoryAPI">
