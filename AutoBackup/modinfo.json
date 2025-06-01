@@ -1,5 +1,6 @@
 {
     "type": "code",
+    "side": "server",
     "modid": "autobackup",
     "name": "AutoBackup",
     "authors": [
