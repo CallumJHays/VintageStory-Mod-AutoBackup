@@ -6,74 +6,111 @@ using System.Threading.Tasks;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 using Vintagestory.API.Server;
+using System.Threading;
 
 #nullable enable
 
 namespace AutoBackup
 {
+
+    public class Debouncer
+    {
+        private readonly int milliseconds;
+        private DateTime? lastEventTime;
+
+        public Debouncer(int milliseconds)
+        {
+            this.milliseconds = milliseconds;
+        }
+
+        public void debounced(Action action)
+        {
+            var now = DateTime.UtcNow;
+
+            // Check if enough time has passed since the last event
+            if (lastEventTime == null || (now - lastEventTime.Value).TotalMilliseconds > milliseconds)
+            {
+                action();
+                lastEventTime = now;
+            }
+        }
+    }
+
     public class AutoBackupModSystem : ModSystem
     {
         private const string BACKUP_FILE_DATETIME_FORMAT = "yyyy-MM-dd_HH-mm-ss";
 
-        private ICoreServerAPI? api;
+        private string? saveFilePath;
+        private FileSystemWatcher? watcher;
+        private Debouncer? debouncer;
 
         public override void StartServerSide(ICoreServerAPI api)
         {
-            this.api = api;
-            api.Event.GameWorldSave += () => new Task(WaitForSaveThenBackup).Start();
+            saveFilePath = api.WorldManager.CurrentWorldName;
+
+            watcher = new FileSystemWatcher(GamePaths.Saves)
+            {
+                EnableRaisingEvents = true,
+                Filter = Path.GetFileName(saveFilePath)
+            };
+            debouncer = new Debouncer(5000);
+
+            Mod.Logger.Notification($"Monitoring save file {saveFilePath}");
+
+            // Wrap the event handler with debounce  
+            watcher.Changed += (object sender, FileSystemEventArgs e) => debouncer.debounced(() => OnSaveFileChanged(sender, e));
         }
 
-        private void WaitForSaveThenBackup()
+        private void OnSaveFileChanged(object sender, FileSystemEventArgs e)
         {
-            var saveFileName = Path.GetFileName(api.WorldManager.CurrentWorldName);
-
-            using var watcher = new FileSystemWatcher(GamePaths.Saves) { Filter = saveFileName };
-
-            Mod.Logger.Notification($"Waiting for save game to complete: {api.WorldManager.CurrentWorldName}");
-            var waitResult = watcher.WaitForChanged(WatcherChangeTypes.Changed, timeout: 60_000); // 1 minute
-            if (waitResult.TimedOut)
-            {
-                throw new Exception("Timed Out waiting for save");
-            }
-            Mod.Logger.Notification($"New Game Save Detected Successfully. Backing up saved game...");
-            
-
-            // eg: "peaceful adventure world-bkp-2025-05-13_18-42-38.vcdbs"
-            var nowString = DateTime.Now.ToString(BACKUP_FILE_DATETIME_FORMAT);
-            var backupFileName = saveFileName.Replace(".vcdbs", $"-autobackup-{nowString}.vcdbs");
+            // eg: "peaceful adventure world-autobackup-2025-05-13_18-42-38.vcdbs"
+            var nowString = File.GetLastWriteTime(e.FullPath).ToString(BACKUP_FILE_DATETIME_FORMAT);
+            var backupFileName = e.Name!.Replace(".vcdbs", $"-autobackup-{nowString}.vcdbs");
             var backupFilePath = Path.Join(GamePaths.BackupSaves, backupFileName);
 
-            File.Copy(api.WorldManager.CurrentWorldName, backupFilePath);
-            Mod.Logger.Notification($"Successfully copied file to backup path {backupFilePath}");
+            File.Copy(e.FullPath, backupFilePath, overwrite: true);
+            Mod.Logger.Notification($"Successfully backed up {e.FullPath} to {backupFilePath}");
 
-            // Retention policy: Keep specific backups and delete others
-            ApplyBackupRetentionPolicy(GamePaths.BackupSaves, saveFileName);
+            ApplyBackupRetentionPolicy(e.Name!);
         }
 
-        private void ApplyBackupRetentionPolicy(string backupDirectory, string saveFileName)
+        private void ApplyBackupRetentionPolicy(string saveFileName)
         {
-            var backupFilesRemaining = Directory.GetFiles(backupDirectory, $"{Path.GetFileNameWithoutExtension(saveFileName)}-autobackup-*.vcdbs")
+            Mod.Logger.Notification($"Applying Retention Policy...");
+            var backupFilesRemaining = Directory.GetFiles(GamePaths.BackupSaves, $"{Path.GetFileNameWithoutExtension(saveFileName)}-autobackup-*.vcdbs")
                 .Select(path => new { path, Timestamp = GetBackupTimestamp(path) })
                 .OrderBy(x => x.Timestamp)
                 .ToHashSet();
 
+
+            Mod.Logger.Notification($"Detected {backupFilesRemaining.Count} existing backups");
+
+            // Always keep the most recent backup
+            var mostRecent = backupFilesRemaining.LastOrDefault();
+            if (mostRecent != null)
+            {
+                backupFilesRemaining.Remove(mostRecent);
+                Mod.Logger.Notification($"Keeping most recent backup file {mostRecent.path}");
+            }
+
             var now = DateTime.Now;
             var retentionPeriods = new[] {
-                TimeSpan.FromMinutes(5),
-                TimeSpan.FromMinutes(10),
-                TimeSpan.FromMinutes(15),
-                TimeSpan.FromMinutes(20),
-                TimeSpan.FromHours(1),
-                TimeSpan.FromHours(3),
-                TimeSpan.FromDays(1),
+                // eg. keep the oldest file less than 3 days old, next oldest less than 1 day old, etc...
+                // TODO: make configurable
                 TimeSpan.FromDays(3),
+                TimeSpan.FromDays(1),
+                TimeSpan.FromHours(3),
+                TimeSpan.FromHours(1),
+                TimeSpan.FromMinutes(20),
+                TimeSpan.FromMinutes(15),
+                TimeSpan.FromMinutes(10),
+                TimeSpan.FromMinutes(5),
             };
-
-            // go through the retention periods in order, and build a set of the files to keep
 
             foreach (var period in retentionPeriods)
             {
                 var periodStart = now - period;
+                // keep the oldest file that satisfies the given period
                 var fileInPeriod = backupFilesRemaining
                     .FirstOrDefault(x => x.Timestamp + period >= now);
 
@@ -82,14 +119,6 @@ namespace AutoBackup
                     backupFilesRemaining.Remove(fileInPeriod);
                     Mod.Logger.Notification($"Keeping backup file {fileInPeriod.path} for policy period {period}");
                 }
-            }
-
-            // Always keep the most recent backup
-            var mostRecent = backupFilesRemaining.LastOrDefault();
-            if (mostRecent != null)
-            {
-                backupFilesRemaining.Remove(mostRecent);
-                Mod.Logger.Notification($"Keeping most recent backup file {mostRecent.path}");
             }
 
             // delete remaining files outside retention policy
@@ -106,6 +135,13 @@ namespace AutoBackup
             var fileName = Path.GetFileNameWithoutExtension(filePath);
             var timestampPart = fileName.Split("-autobackup-")[1];
             return DateTime.ParseExact(timestampPart, BACKUP_FILE_DATETIME_FORMAT, null, System.Globalization.DateTimeStyles.None);
+        }
+
+        public override void Dispose()
+        {
+            watcher?.Dispose();
+            Mod.Logger.Notification("Disposed");
+            base.Dispose();
         }
     }
 }
