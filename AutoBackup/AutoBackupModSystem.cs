@@ -16,22 +16,33 @@ namespace AutoBackup
     public class Debouncer
     {
         private readonly int milliseconds;
-        private DateTime? lastEventTime;
+        private Action? latestAction;
+        private Timer? timer;
+        private readonly object lockObj = new object();
 
         public Debouncer(int milliseconds)
         {
             this.milliseconds = milliseconds;
         }
 
-        public void debounced(Action action)
+        public void Debounced(Action action)
         {
-            var now = DateTime.UtcNow;
-
-            // Check if enough time has passed since the last event
-            if (lastEventTime == null || (now - lastEventTime.Value).TotalMilliseconds > milliseconds)
+            lock (lockObj)
             {
-                action();
-                lastEventTime = now;
+                latestAction = action;
+                timer?.Dispose();
+                timer = new Timer(_ =>
+                {
+                    Action? toRun;
+                    lock (lockObj)
+                    {
+                        toRun = latestAction;
+                        latestAction = null;
+                        timer?.Dispose();
+                        timer = null;
+                    }
+                    toRun?.Invoke();
+                }, null, milliseconds, Timeout.Infinite);
             }
         }
     }
@@ -53,12 +64,12 @@ namespace AutoBackup
                 EnableRaisingEvents = true,
                 Filter = Path.GetFileName(saveFilePath)
             };
-            debouncer = new Debouncer(5000);
+            debouncer = new Debouncer(15_000);
 
             Mod.Logger.Notification($"Monitoring save file {saveFilePath}");
 
-            // Wrap the event handler with debounce  
-            watcher.Changed += (object sender, FileSystemEventArgs e) => debouncer.debounced(() => OnSaveFileChanged(sender, e));
+            // Use new debounce logic
+            watcher.Changed += (object sender, FileSystemEventArgs e) => debouncer.Debounced(() => OnSaveFileChanged(sender, e));
         }
 
         private void OnSaveFileChanged(object sender, FileSystemEventArgs e)
@@ -140,7 +151,6 @@ namespace AutoBackup
         public override void Dispose()
         {
             watcher?.Dispose();
-            Mod.Logger.Notification("Disposed");
             base.Dispose();
         }
     }
