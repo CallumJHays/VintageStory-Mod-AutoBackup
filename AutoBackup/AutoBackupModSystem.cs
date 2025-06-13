@@ -2,7 +2,6 @@
 using System;
 using System.IO;
 using System.Linq;
-using System.Threading.Tasks;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 using Vintagestory.API.Server;
@@ -14,7 +13,7 @@ using Microsoft.Data.Sqlite;
 namespace AutoBackup
 {
 
-    public class Debouncer
+    public class Debouncer : IDisposable
     {
         private readonly int milliseconds;
         private Action? latestAction;
@@ -46,15 +45,62 @@ namespace AutoBackup
                 }, null, milliseconds, Timeout.Infinite);
             }
         }
+
+        public void Dispose()
+        {
+            timer?.Dispose();
+        }
     }
 
-    public class AutoBackupModSystem : ModSystem
+    public class AutoBackupConfigJson
     {
-        private const string BACKUP_FILE_DATETIME_FORMAT = "yyyy-MM-dd_HH-mm-ss";
+        // eg. keep the oldest file less than 3 days old, next oldest less than 1 day old, etc...
+        public List<string> RetentionPeriods { get; } = new List<string>
+        {
+            "3.00:00:00",   // 3 days
+            "1.00:00:00",   // 1 day
+            "0.12:00:00",   // 12 hours
+            "0.06:00:00",   // 6 hours
+            "0.03:00:00",   // 3 hours
+            "0.01:00:00",   // 1 hour
+            "0.00:30:00",   // 30 minutes
+            "0.00:15:00",   // 15 minutes
+            "0.00:10:00",   // 10 minutes
+            "0.00:05:00"    // 5 minutes
+        };
+    };
+
+    public class AutoBackupConfig
+    {
+        public List<TimeSpan> RetentionPeriods { get; }
+
+        public AutoBackupConfig(AutoBackupConfigJson config)
+        {
+            RetentionPeriods = config.RetentionPeriods.Select(TimeSpan.Parse).ToList();
+        }
+    }
+
+    public class AutoBackupModSystem : ModSystem, IDisposable
+    {
 
         private string? saveFilePath;
         private FileSystemWatcher? watcher;
         private Debouncer? debouncer;
+        private AutoBackupConfig? config;
+
+
+        public override void StartPre(ICoreAPI api)
+        {
+            const string CONFIG_FILENAME = "AutoBackupConfig.json";
+            var json = api.LoadModConfig<AutoBackupConfigJson>(CONFIG_FILENAME);
+            if (json == null)
+            {
+                Mod.Logger.Error("Config file not found, creating a new one...");
+                json = new AutoBackupConfigJson();
+                api.StoreModConfig(json, CONFIG_FILENAME);
+            }
+            config = new AutoBackupConfig(json);
+        }
 
         public override void StartServerSide(ICoreServerAPI api)
         {
@@ -70,18 +116,27 @@ namespace AutoBackup
             Mod.Logger.Notification($"Monitoring save file {saveFilePath}");
 
             // Use new debounce logic
-            watcher.Changed += (object sender, FileSystemEventArgs e) => debouncer.Debounced(() => OnSaveFileChanged(sender, e));
+            watcher.Changed += (object sender, FileSystemEventArgs e) =>
+            {
+                debouncer.Debounced(() =>
+                {
+                    double elapsedGameSeconds = api.World.Calendar.ElapsedSeconds / api.World.Calendar.SpeedOfTime;
+                    OnSaveFileChanged(sender, e, elapsedGameSeconds);
+                });
+            };
         }
 
-        private void OnSaveFileChanged(object sender, FileSystemEventArgs e)
+        private void OnSaveFileChanged(object sender, FileSystemEventArgs e, double elapsedGameSeconds)
         {
-            // eg: "peaceful adventure world-autobackup-2025-05-13_18-42-38.vcdbs"
-            var nowString = File.GetLastWriteTime(e.FullPath).ToString(BACKUP_FILE_DATETIME_FORMAT);
-            var backupFileName = e.Name!.Replace(".vcdbs", $"-autobackup-{nowString}.vcdbs");
+            var backupTimeString = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
+            var gameSecondsString = ((long)elapsedGameSeconds).ToString();
+            var backupFileName = e.Name!.Replace(
+                ".vcdbs",
+                $"-autobackup-{gameSecondsString}-{backupTimeString}.vcdbs"
+            );
             var backupFilePath = Path.Join(GamePaths.BackupSaves, backupFileName);
 
             using (var source = new SqliteConnection($"Data Source={e.FullPath};Mode=ReadOnly"))
-            // we use Pooling=false to ensure that a lock is not held on the destination file, which allows us to delete it later
             using (var destination = new SqliteConnection($"Data Source={backupFilePath};Mode=ReadWriteCreate;Pooling=false"))
             {
                 destination.Open();
@@ -91,17 +146,16 @@ namespace AutoBackup
 
             Mod.Logger.Notification($"Successfully backed up {e.FullPath} to {backupFilePath}");
 
-            ApplyBackupRetentionPolicy(e.Name!);
+            ApplyBackupRetentionPolicy(e.Name!, elapsedGameSeconds);
         }
 
-        private void ApplyBackupRetentionPolicy(string saveFileName)
+        private void ApplyBackupRetentionPolicy(string saveFileName, double elapsedGameSeconds)
         {
             Mod.Logger.Notification($"Applying Retention Policy...");
             var backupFilesRemaining = Directory.GetFiles(GamePaths.BackupSaves, $"{Path.GetFileNameWithoutExtension(saveFileName)}-autobackup-*.vcdbs")
-                .Select(path => new { path, Timestamp = GetBackupTimestamp(path) })
-                .OrderBy(x => x.Timestamp)
+                .Select(path => new { path, GameSeconds = GetBackupGameSeconds(path) })
+                .OrderBy(x => x.GameSeconds)
                 .ToHashSet();
-
 
             Mod.Logger.Notification($"Detected {backupFilesRemaining.Count} existing backups");
 
@@ -113,31 +167,18 @@ namespace AutoBackup
                 Mod.Logger.Notification($"Keeping most recent backup file {mostRecent.path}");
             }
 
-            var now = DateTime.Now;
-            var retentionPeriods = new[] {
-                // eg. keep the oldest file less than 3 days old, next oldest less than 1 day old, etc...
-                // TODO: make configurable
-                TimeSpan.FromDays(3),
-                TimeSpan.FromDays(1),
-                TimeSpan.FromHours(3),
-                TimeSpan.FromHours(1),
-                TimeSpan.FromMinutes(20),
-                TimeSpan.FromMinutes(15),
-                TimeSpan.FromMinutes(10),
-                TimeSpan.FromMinutes(5),
-            };
-
-            foreach (var period in retentionPeriods)
+            foreach (var period in config!.RetentionPeriods)
             {
-                var periodStart = now - period;
+                var periodSeconds = period.TotalSeconds;
+                var periodStart = elapsedGameSeconds - periodSeconds;
                 // keep the oldest file that satisfies the given period
                 var fileInPeriod = backupFilesRemaining
-                    .FirstOrDefault(x => x.Timestamp + period >= now);
+                    .FirstOrDefault(x => x.GameSeconds + periodSeconds >= elapsedGameSeconds);
 
                 if (fileInPeriod != null)
                 {
                     backupFilesRemaining.Remove(fileInPeriod);
-                    Mod.Logger.Notification($"Keeping backup file {fileInPeriod.path} for policy period {period}");
+                    Mod.Logger.Notification($"Keeping backup file {fileInPeriod.path} for policy period {period} ({periodSeconds} seconds)");
                 }
             }
 
@@ -147,19 +188,28 @@ namespace AutoBackup
                 File.Delete(file.path);
                 Mod.Logger.Notification($"Deleted backup outside policy {file.path}");
             }
-
         }
 
-        private DateTime GetBackupTimestamp(string filePath)
+        private long GetBackupGameSeconds(string filePath)
         {
             var fileName = Path.GetFileNameWithoutExtension(filePath);
-            var timestampPart = fileName.Split("-autobackup-")[1];
-            return DateTime.ParseExact(timestampPart, BACKUP_FILE_DATETIME_FORMAT, null, System.Globalization.DateTimeStyles.None);
+            var match = System.Text.RegularExpressions.Regex.Match(fileName, @"-autobackup-(\d+)-");
+            if (!match.Success)
+            {
+                throw new FormatException(
+                    $"Could not extract game seconds from backup filename: {fileName}.\n" +
+                    "Expected format: <savefile>-autobackup-<gameSeconds>-<timestamp>.vcdbs\n" +
+                    "Eg. serene kingdom story-autobackup-1234567890-2023-10-01_12-00-00.vcdbs\n" +
+                    $"Got: {fileName}"
+                );
+            }
+            return long.Parse(match.Groups[1].Value);
         }
 
         public override void Dispose()
         {
             watcher?.Dispose();
+            debouncer?.Dispose();
             base.Dispose();
         }
     }
