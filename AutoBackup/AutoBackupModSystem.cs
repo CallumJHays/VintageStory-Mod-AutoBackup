@@ -7,6 +7,7 @@ using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 using Vintagestory.API.Server;
 using System.Threading;
+using Microsoft.Data.Sqlite;
 
 #nullable enable
 
@@ -79,7 +80,15 @@ namespace AutoBackup
             var backupFileName = e.Name!.Replace(".vcdbs", $"-autobackup-{nowString}.vcdbs");
             var backupFilePath = Path.Join(GamePaths.BackupSaves, backupFileName);
 
-            File.Copy(e.FullPath, backupFilePath, overwrite: true);
+            using (var source = new SqliteConnection($"Data Source={e.FullPath};Mode=ReadOnly"))
+            // we use Pooling=false to ensure that a lock is not held on the destination file, which allows us to delete it later
+            using (var destination = new SqliteConnection($"Data Source={backupFilePath};Mode=ReadWriteCreate;Pooling=false"))
+            {
+                destination.Open();
+                source.Open();
+                source.BackupDatabase(destination);
+            }
+
             Mod.Logger.Notification($"Successfully backed up {e.FullPath} to {backupFilePath}");
 
             ApplyBackupRetentionPolicy(e.Name!);

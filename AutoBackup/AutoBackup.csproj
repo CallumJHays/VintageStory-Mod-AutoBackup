@@ -7,11 +7,11 @@
   </PropertyGroup>
 
 
-    <ItemGroup>
-	    <ProjectReference Include="..\ZZCakeBuild\CakeBuild.csproj">
-		    <Private>False</Private>
-	    </ProjectReference>
-    </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ZZCakeBuild\CakeBuild.csproj">
+      <Private>False</Private>
+    </ProjectReference>
+  </ItemGroup>
 
   <ItemGroup>
     <Reference Include="VintagestoryAPI">
@@ -56,16 +56,16 @@
     </Reference>
   </ItemGroup>
 
-<ItemGroup>
-  <Content Include="modinfo.json">
+  <ItemGroup>
+    <Content Include="modinfo.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-  </Content>
-</ItemGroup>
+    </Content>
+  </ItemGroup>
 
-<ItemGroup>
-  <Content Include="modicon.png">
+  <ItemGroup>
+    <Content Include="modicon.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-  </Content>
-</ItemGroup>
+    </Content>
+  </ItemGroup>
 
 </Project>
