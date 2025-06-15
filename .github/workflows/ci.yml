@@ -73,6 +73,7 @@ jobs:
         git config user.email "github-actions[bot]@users.noreply.github.com"
         git fetch --tags
         git tag $env:RELEASE_TAG
+        if ($LASTEXITCODE -ne 0) { throw "Failed to push tag: $LASTEXITCODE" }
         git push origin $env:RELEASE_TAG
       
     - name: Download Build Artifacts
