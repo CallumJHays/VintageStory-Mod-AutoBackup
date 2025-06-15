@@ -31,9 +31,12 @@ jobs:
         Add-Content -Path $Env:GITHUB_ENV -Value "VINTAGE_STORY=${vsdir.FullPath}"
 
     - name: Build and Package Mod
-      run: .\build.ps1
-      env:
-        VINTAGE_STORY: ${{ env.VINTAGE_STORY }}
+      run: |
+        Write-Host "VINTAGE_STORY env var: $Env:VINTAGE_STORY"
+        Write-Host "Files in Vintage Story directory:"
+        Get-ChildItem -Path $Env:VINTAGE_STORY -Recurse | Where-Object { $_.Name -like "*VintagestoryAPI.dll" } | ForEach-Object { Write-Host $_.FullName }
+
+        .\build.ps1
 
     - name: Upload Build Artifacts
       uses: actions/upload-artifact@v4
