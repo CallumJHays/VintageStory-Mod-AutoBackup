@@ -44,8 +44,12 @@ jobs:
   release:
     needs: build
     runs-on: windows-latest
+
     # Only run on push to master branch or PRs from original repo (not forks)
     if: github.event_name == 'push' && github.ref == 'refs/heads/master' || github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: write
+
     steps:
     - name: Checkout
       uses: actions/checkout@v3
