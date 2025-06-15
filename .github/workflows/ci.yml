@@ -20,6 +20,7 @@ jobs:
 
     - name: Setup Build Dependencies
       run: |
+        $ErrorActionPreference = "Stop"
         $vs_version = $(Get-Content .\AutoBackup\modinfo.json | jq -r '.dependencies.game')
         $filename = "vs_server_linux-x64_${vs_version}.tar.gz"
         $folder = if ($vs_version -like "*-rc*") { "unstable" } else { "stable" }
@@ -51,6 +52,7 @@ jobs:
 
     - name: Set Release Tag
       run: |
+        $ErrorActionPreference = "Stop"
         $mod_version = $(Get-Content .\AutoBackup\modinfo.json | jq -r .version)
         if ("${{ github.ref }}" -ne "refs/heads/master") {
           $datetime = Get-Date -Format "yyyyMMddHHmmss"
@@ -59,19 +61,10 @@ jobs:
           $RELEASE_TAG = "v${mod_version}"
         }
         Add-Content -Path $Env:GITHUB_ENV -Value "RELEASE_TAG=$RELEASE_TAG"
-
-    - name: Fail if release exists
-      run: |
-        gh release view $env:RELEASE_TAG > $null 2>&1
-        if ($LASTEXITCODE -eq 0) {
-          echo "::error::Release $env:RELEASE_TAG already exists. Update the version in modinfo.json before releasing again."
-          exit 1
-        }
-      env:
-        GH_TOKEN: ${{ github.token }}
     
     - name: Commit Release Tag
       run: |
+        $ErrorActionPreference = "Stop"
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
         git fetch --tags
