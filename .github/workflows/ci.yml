@@ -62,7 +62,7 @@ jobs:
 
     - name: Fail if release exists
       run: |
-        $release_exists = gh release view $env:RELEASE_TAG > $null 2>&1
+        gh release view $env:RELEASE_TAG > $null 2>&1
         if ($LASTEXITCODE -eq 0) {
           echo "::error::Release $env:RELEASE_TAG already exists. Update the version in modinfo.json before releasing again."
           exit 1
