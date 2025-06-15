@@ -9,6 +9,6 @@
     "description": "Auto-Backup Saves Periodically",
     "version": "0.1.0",
     "dependencies": {
-        "game": ""
+        "game": "1.20.10"
     }
 }

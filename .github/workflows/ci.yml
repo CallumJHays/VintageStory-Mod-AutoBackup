@@ -1,0 +1,88 @@
+name: Build AutoBackup Release
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "dev" ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: '7.0.x'
+
+    - name: Setup Build Dependencies
+      run: |
+        $vs_version = $(Get-Content .\AutoBackup\modinfo.json | jq -r '.dependencies.game')
+        $filename = "vs_server_${vs_version}.tar.gz"
+        $folder = if ($vs_version -like "*-rc*") { "unstable" } else { "stable" }
+        $uri = "https://cdn.vintagestory.at/gamefiles/${folder}/${filename}"
+        Invoke-WebRequest -Uri $uri -Out $filename
+        $vsdir = $(mkdir VintageStory)
+        cd VintageStory
+        tar -zxvf "..\$filename" Lib/ Mods/ VintagestoryAPI.dll
+        Add-Content -Path $Env:GITHUB_ENV -Value "VINTAGE_STORY=${vsdir.FullPath}"
+
+    - name: Build and Package Mod
+      run: .\build.ps1
+      env:
+        VINTAGE_STORY: ${{ env.VINTAGE_STORY }}
+
+    - name: Upload Build Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: mod-files
+        path: Releases/*
+        if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: windows-latest
+    # Only run on push to master branch or PRs from original repo (not forks)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Set Release Tag
+      run: |
+        $mod_version = $(Get-Content .\AutoBackup\modinfo.json | jq -r .version)
+        if ("${{ github.ref }}" -ne "refs/heads/master") {
+          $datetime = Get-Date -Format "yyyyMMddHHmmss"
+          $release_tag = "v${mod_version}-dev.$datetime"
+        } else {
+          $release_tag = "v${mod_version}"
+        }
+        echo "RELEASE_TAG=$release_tag" >> $GITHUB_ENV
+
+    - name: Fail if release exists
+      run: |
+        $release_exists = gh release view $env:RELEASE_TAG > $null 2>&1
+        if ($LASTEXITCODE -eq 0) {
+          echo "::error::Release $env:RELEASE_TAG already exists. Update the version in modinfo.json before releasing again."
+          exit 1
+        }
+      env:
+        GH_TOKEN: ${{ github.token }}
+      
+    - name: Download Build Artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: mod-files
+        path: Releases
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: 
+        name: AutoBackup ${{ env.RELEASE_TAG }}
+        files: Releases/*
+        prerelease: ${{ github.event_name == 'pull_request' }}
+        generate_release_notes: true
